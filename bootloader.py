@@ -21,7 +21,7 @@ TWISTER_PATH = (
 
 # For a Pi 3B+, 0.0005 seems right. For a Pi 4, 0.0008 has been observed to work correctly (presumably latency between sleep and GPIO is lower).
 CRC_DELAY = (
-    0.0005
+    0.0008
 )  # This is the amount of time a single iteration of the CRC process takes. This will need to be adjusted through observation, checking the output of the boot password read process until 0x100 bytes are being checked.
 
 SEED_START = (
@@ -72,6 +72,7 @@ def print_success_failure(data):
 
 
 def get_key_from_seed(seed_data):
+
     p = subprocess.run(
         [TWISTER_PATH, SEED_START, seed_data, "1"],
         stdout=subprocess.PIPE,
@@ -135,9 +136,12 @@ def sboot_getseed():
     conn.send(bytes([0x54]))
     data = conn.wait_frame()
     print_success_failure(data)
-    data = data[9:]
+    first_frame = data[:9]
+    print("First CAN frame for seed response:\n")
+    print(first_frame)
+    dt = data[9:]
     conn.close()
-    return data
+    return dt
 
 
 def sboot_sendkey(key_data):
@@ -237,7 +241,10 @@ def sboot_shell():
     pwm = sboot_pwm()
     time.sleep(1)
     print("Resetting ECU into Supplier Bootloader...")
-    reset_ecu()
+    print("Please turn on ECU power...")
+    input("Press Enter to continue...")
+    # not using automatic ecu reset yet, reset manually by switching the power on and off
+    # reset_ecu()
     bus.send(Message(data=[0x59, 0x45], arbitration_id=0x7E0, is_extended_id=False))
     print("Sending 59 45...")
     bus.send(Message(data=[0x6B], arbitration_id=0x7E0, is_extended_id=False))
@@ -682,6 +689,12 @@ class BootloaderRepl(cmd.Cmd):
     def do_bye(self, arg):
         "Exit"
         return True
+
+    def do_test_pwm(self, arg):
+        sboot_seed = sboot_shell()
+        print("Testing PWM, got seed: ")
+        print(sboot_seed.hex())
+
 
 
 def parse(arg):
