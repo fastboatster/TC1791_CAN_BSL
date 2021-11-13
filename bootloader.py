@@ -254,20 +254,22 @@ def sboot_shell():
         if stage2 is True:
             bus.send(Message(data=[0x6B], arbitration_id=0x7E0, is_extended_id=False))
             print("Sending 6B...")
-            fd.write('Sending 6B...')
+            fd.write('Sending 6B...\n')
         message = bus.recv(0.01)
         print(message)
-        fd.write(str(message.arbitration_id) + ' '+ message.data)
+        fd.write(str(message.arbitration_id) + ": ")
+        fd.write(message.data)
+        fd.write('\n')
         if (
             message is not None
             and message.arbitration_id == 0x7E8
             and message.data[0] == 0xA0
         ):
             print("Got A0 message")
-            fd.write("Got A0 message")
+            fd.write("Got A0 message\n")
             if stage2:
                 print("Switching to IsoTP Socket...")
-                fd.write("Switching to IsoTP Socket...")
+                fd.write("Switching to IsoTP Socket...\n")
                 pwm.cancel()
                 return sboot_getseed()
             print("Sending 6B...")
@@ -275,7 +277,7 @@ def sboot_shell():
             stage2 = True
         if message is not None and message.arbitration_id == 0x0A7:
             print("FAILURE")
-            fd.write("FAILURE")
+            fd.write("FAILURE\n")
             pwm.cancel()
             return False
 
