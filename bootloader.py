@@ -257,7 +257,7 @@ def sboot_shell():
             fd.write('Sending 6B...')
         message = bus.recv(0.01)
         print(message)
-        fd.write(message)
+        fd.write(message.arbitration_id + ' '+ message.data)
         if (
             message is not None
             and message.arbitration_id == 0x7E8
