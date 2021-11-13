@@ -249,26 +249,33 @@ def sboot_shell():
     print("Sending 59 45...")
     bus.send(Message(data=[0x6B], arbitration_id=0x7E0, is_extended_id=False))
     stage2 = False
+    fd = open('log.txt', 'a')
     while True:
         if stage2 is True:
             bus.send(Message(data=[0x6B], arbitration_id=0x7E0, is_extended_id=False))
             print("Sending 6B...")
+            fd.write('Sending 6B...')
         message = bus.recv(0.01)
         print(message)
+        fd.write(message)
         if (
             message is not None
             and message.arbitration_id == 0x7E8
             and message.data[0] == 0xA0
         ):
             print("Got A0 message")
+            fd.write("Got A0 message")
             if stage2:
                 print("Switching to IsoTP Socket...")
+                fd.write("Switching to IsoTP Socket...")
                 pwm.cancel()
                 return sboot_getseed()
             print("Sending 6B...")
+            fd.write("Sending 6B...")
             stage2 = True
         if message is not None and message.arbitration_id == 0x0A7:
             print("FAILURE")
+            fd.write("FAILURE")
             pwm.cancel()
             return False
 
