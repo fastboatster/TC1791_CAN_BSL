@@ -258,7 +258,7 @@ def sboot_shell():
         message = bus.recv(0.01)
         print(message)
         fd.write(str(message.arbitration_id) + ": ")
-        fd.write(bytes(message.data))
+        fd.write(message.data.hex())
         fd.write('\n')
         if (
             message is not None
