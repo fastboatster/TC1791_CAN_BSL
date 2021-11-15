@@ -109,8 +109,8 @@ def sboot_pwm():
 
     pwm = wavePWM.PWM(pi)  # Use default frequency
 
-    pwm.set_frequency(3210)
-    # pwm.set_frequency(6420)
+    # pwm.set_frequency(3210)
+    pwm.set_frequency(6420)
     cl = pwm.get_cycle_length()
     pwm.set_pulse_start_in_micros(13, cl / 1)
     pwm.set_pulse_length_in_micros(13, cl / 2)
