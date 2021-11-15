@@ -109,8 +109,8 @@ def sboot_pwm():
 
     pwm = wavePWM.PWM(pi)  # Use default frequency
 
-    # pwm.set_frequency(3210)
-    pwm.set_frequency(6420)
+    pwm.set_frequency(3210)
+    # pwm.set_frequency(6420)
     cl = pwm.get_cycle_length()
     pwm.set_pulse_start_in_micros(13, cl / 1)
     pwm.set_pulse_length_in_micros(13, cl / 2)
@@ -248,7 +248,9 @@ def sboot_shell():
     # reset_ecu()
     bus.send(Message(data=[0x59, 0x45], arbitration_id=0x7E0, is_extended_id=False))
     print("Sending 59 45...")
-    bus.send(Message(data=[0x6B], arbitration_id=0x7E0, is_extended_id=False))
+    # might need to try to recieve A0 first:
+
+    # bus.send(Message(data=[0x6B], arbitration_id=0x7E0, is_extended_id=False))
     stage2 = False
     fd = open('log.txt', 'a')
     while True:
