@@ -1,6 +1,6 @@
-# TC1791_CAN_BSL
-CAN Bootstrap Loader (BSL) for Tricore AudoMAX (TC1791 and friends)
-
+# TC1796_CAN_BSL
+This is a fork of bri3d's CAN Bootstrap Loader (BSL) for Tricore AudoMAX (TC1791 and friends). Currently being updated to work with TC1796
+Below is a TC1791 CAN BSL info as it pertains to Simos 18 ECUs. Info about Simos 8.4/8.4 will be added after appropriate ECU pins are traced on 8.4/8.5 ECU PCBs.
 # Background
 By setting the HWCFG register on Tricore processors to a specific value, the Mask ROM / Boot ROM in the CPU will enter a serial-based or CAN-based Bootstrap Loader.
 
