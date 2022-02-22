@@ -246,13 +246,17 @@ def sboot_shell():
     input("Press Enter to continue...")
     # not using automatic ecu reset yet, reset manually by switching the power on and off
     # reset_ecu()
-    bus.send(Message(data=[0x59, 0x45], arbitration_id=0x7E0, is_extended_id=False))
+    
     print("Sending 59 45...")
-    # might need to try to recieve A0 first:
-
-    # bus.send(Message(data=[0x6B], arbitration_id=0x7E0, is_extended_id=False))
-    stage2 = False
+    # might need to try to receive A0 first:
     fd = open('log.txt', 'a')
+    fd.write("Sending 59 45...\n")
+    bus.send(Message(data=[0x59, 0x45], arbitration_id=0x7E0, is_extended_id=False))
+    message = bus.recv(0.05)  
+    bus.send(Message(data=[0x6B], arbitration_id=0x7E0, is_extended_id=False))
+    fd.write('Sending 0x6b\n')
+    stage2 = False
+
     while True:
         if stage2 is True:
             bus.send(Message(data=[0x6B], arbitration_id=0x7E0, is_extended_id=False))
