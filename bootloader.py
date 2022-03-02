@@ -25,7 +25,8 @@ CRC_DELAY = (
 )  # This is the amount of time a single iteration of the CRC process takes. This will need to be adjusted through observation, checking the output of the boot password read process until 0x100 bytes are being checked.
 
 SEED_START = (
-    "1D00000"
+    # "1D00000"
+    "1800000"  # for Simos 8.5
 )  # This is the starting value for the expected timer value range for the Seed/Key calculation. This seems to work for both Pi 3B+ and Pi 4.
 
 
