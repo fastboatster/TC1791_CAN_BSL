@@ -1,9 +1,10 @@
 # TC1796_CAN_BSL
-This is a fork of bri3d's CAN Bootstrap Loader (BSL) for Tricore AudoMAX (TC1791 and friends). Currently being updated to work with TC1796.
-Below is a TC1791 CAN BSL info as it pertains to Simos 18 ECUs. Info about Simos 8.4/8.4 is currently being slowly added:
-[Simos 8.4/8.5 Info](Simos8_sboot_connections.md)
+This is a fork of bri3d's CAN Bootstrap Loader (BSL) for Tricore AudoMAX (TC1791 and friends). It is currently being updated to work with TC1796.
+[Info/work on Simos 8.4/8.5 (TC1796)](Simos8_sboot_connections.md) is currently in progress, however, a **milestone** (passing seed-key challenge) has been reached :tada: :tada: :tada:
+
 It took a while to partially reproduce the original Simos 18 "exploit" due to "unbound grounds" issue - i.e, ECU ground and Raspberry Pi grounds (!!!)need to be connected in order for GPIO to produces the correct PWM shapes to ge the ECU into the service mode:
 ![Simos 18.2 SBOOT Shell Seed Response](simos18_2_sboot_shell_seed_response.png)
+Below is a TC1791 CAN BSL info from the original Github repo as it pertains to Simos 18 ECUs.
 # Background
 By setting the HWCFG register on Tricore processors to a specific value, the Mask ROM / Boot ROM in the CPU will enter a serial-based or CAN-based Bootstrap Loader.
 
