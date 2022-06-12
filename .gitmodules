@@ -1,0 +1,6 @@
+[submodule "crchack"]
+	path = crchack
+	url = https://github.com/resilar/crchack.git
+[submodule "Simos8_SBOOT"]
+	path = Simos8_SBOOT
+	url = https://github.com/fastboatster/Simos8_SBOOT.git
