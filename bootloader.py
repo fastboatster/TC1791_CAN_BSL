@@ -26,15 +26,18 @@ TWISTER_PATH = (
 
 # For a Pi 3B+, 0.0005 seems right. For a Pi 4, 0.0008 has been observed to work correctly (presumably latency between sleep and GPIO is lower).
 CRC_DELAY = (
+    # 0.00003
     0.00005
-)  # This is the amount of time a single iteration of the CRC process takes. This will need to be adjusted through observation, checking the output of the boot password read process until 0x100 bytes are being checked.
+)   # This is the amount of time a single iteration of the CRC process takes. This will need to be adjusted through
+# observation, checking the output of the boot password read process until 0x100 bytes are being checked.
 
 #TODO make this dependent on the ecu reset timestamp and seed message timestamp. I.e., the amount of time which passed
 # between the reset and received seed message
 SEED_START = (
-    # "1D00000" # for Simos 18
-    "1800000"  # for Simos 8.5
-)  # This is the starting value for the expected timer value range for the Seed/Key calculation. This seems to work for both Pi 3B+ and Pi 4.
+    # "1D00000" # for Simos 18 with RPi 3B
+    "1800000"  # for Simos 8.5 with RPi 4
+)  # This is the starting value for the expected timer value range for the Seed/Key calculation.
+# This seems to work for both Pi 3B+ and Pi 4.
 
 # number of `None` messages after `6B` request after which we'll ignore missing `A0` response
 # and try to go into the ISO-TP shell anyway (given that we got  `A0` response to the initial `59 45` request)
@@ -607,6 +610,7 @@ def upload_bsl(skip_prep=False):
     for block_base_address in tqdm(
         range(0, len(bootloader_data), 8), unit_scale=True, unit="blocks"
     ):
+    #for block_base_address in range(0, len(bootloader_data), 8):
         block_end = min(len(bootloader_data), block_base_address + 8)
         message = Message(
             is_extended_id=False,
@@ -652,7 +656,6 @@ def read_byte(byte_specifier):
         byte_data += message.data[1:5]
     return byte_data
 
-
 def read_byte_simos8(byte_specifier):
     data = bytearray([0x00, 0x08])
     data += byte_specifier
@@ -686,7 +689,6 @@ def read_byte_simos8(byte_specifier):
         byte_data += message.data[0:4]
 
     return byte_data
-
 
 def simos8_can_frame_test():
     # should return 0xdeadbeef 0xbaadd00d
@@ -1346,7 +1348,6 @@ class BootloaderRepl(cmd.Cmd):
         """erase_sector <addr> : Erase sector beginning with address"""
         byte_specifier = bytearray.fromhex(arg)
         erase_sector(byte_specifier)
-
 
     def do_extract_boot_passwords(self, arg):
         """extract_boot_passwords : Extract Simos18 boot passwords using SBoot exploit chain. Requires 'crchack' in
