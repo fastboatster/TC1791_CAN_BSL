@@ -36,33 +36,47 @@ Furthermore, if the ECU is not locked by the Immobilizer and is functioning corr
 * A mechanism for connecting to pins on the ECU connector. Even alligator clips will work in a pinch. I have had good luck with simple crimp-on female pin connectors (JST or the like) wrapped in heat shrink. Or, a "pigtail" style take-off ECU harness, often sold as "4H0906971A," which will need to be re-pinned as the two PWM connections are not usually connected at all.
 
 
+
 # Hardware Setup
 
-Make these connections:
+Make connections according to the diagrams below:
 
-![PCB1](Board1.jpg)
-![PCB3](Board3.jpg)
+![PCB](simos85_pcb_connection_diagram.jpg)
+![RPi](rpi_connections.jpg)
 
-Connect the following wire or probe to Raspberry Pi GPIO 24 (see https://pinout.xyz ) - this is the HWCFG we use to select "BSL Mode" dynamically. If you are not extracting passwords and just want BSL access, you can just tie this to GND to always enter BSL Mode.
 
-![PCB2](Board2.jpg)
-
-(optional, needed for password extraction only): Connect the following probe to Raspberry Pi GPIO 23 - this is the CPU RST pin we use to perform a reset exploit to infer boot passwords.
-
-![RST](RST.jpg)
 
 # Harness Pins
 
-Connect the following pins of the left-hand connector when looking at the opened ECU: 
+Connect the following pins of the ECU harness connector: 
+## Simos 8.4 connections to Raspberry Pi:
+Only used to test if the seed is returned, no attempt to extract the passwords.
+- Connector with 94 contacts:
+- 68 CAN Hi
+- 67 CAN Lo
+- 64 +12V
+- 87 +12V
+- 2 - ground from the power supply
+- 1 - ground from Raspberry Pi (pin 34, although any ground should work. pin 34
+ is also used as level converter's ground)
+- Connector with 60 contacts:
+- 25 - pin 32 Raspberry Pi (GPIO 12 (PWM0))
+- 11 - pin 33 Raspberry Pi (GPIO 13 (PWM1))
+ Note: all Raspberry Pi pin numbers are from pinout.xyz
 
-* + ~13V: Left harness connector pins 6, 50, 86 (6 is one of the large pins, the rest are small).
-* GROUND: 1 (this is the upper-right large pin).
-* CANH: 79, to CAN interface CanH
-* CANL: 80, to CAN interface CanL
-* "PWM1": 66 (only necessary for SBOOT), to a 5V level shifter attached to GPIO 12.
-* "PWM2": 71 (only necessary for SBOOT), to a 5V level shifter attached to GPIO 13.
-
-![Connector Pinout](pinout_connector.jpg)
+## Simos 8.5 connections to Raspberry Pi:
+Nearly identical to 8.4 except for PWM pins:
+- Connector with 94 contacts:
+ - 68 CAN Hi
+ - 67 CAN Lo
+ - 64 +12V
+ - 87 +12V
+ - 2 - ground from the power supply
+ - 1 - ground from Raspberry Pi (pin 34, although any ground should work. pin 34
+ is also used as level converter's ground)
+- Connector with 60 contacts:
+ - 55 - pin 32 Raspberry Pi (GPIO 12 (PWM0))
+ - 40 - pin 33 Raspberry Pi (GPIO 13 (PWM1))
 
 # Setup for Password Extraction
 
