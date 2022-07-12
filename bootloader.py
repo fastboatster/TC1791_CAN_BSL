@@ -2,6 +2,7 @@ import cmd
 import crc_bruteforce
 import crc_bruteforce_simos85
 import can
+import io
 from can import Message
 import lz4.block
 import math
@@ -10,6 +11,7 @@ import struct
 import time
 import pigpio
 import subprocess
+from itertools import zip_longest
 from udsoncan.connections import IsoTPSocketConnection
 import socket
 import logging
@@ -26,10 +28,11 @@ TWISTER_PATH = (
 
 # For a Pi 3B+, 0.0005 seems right. For a Pi 4, 0.0008 has been observed to work correctly (presumably latency between sleep and GPIO is lower).
 CRC_DELAY = (
-    # 0.00003
-    0.00005
-)   # This is the amount of time a single iteration of the CRC process takes. This will need to be adjusted through
-# observation, checking the output of the boot password read process until 0x100 bytes are being checked.
+    #0.00003
+    #0.00005
+    0.00008
+    # 0.0100
+)  # This is the amount of time a single iteration of the CRC process takes. This will need to be adjusted through observation, checking the output of the boot password read process until 0x100 bytes are being checked.
 
 #TODO make this dependent on the ecu reset timestamp and seed message timestamp. I.e., the amount of time which passed
 # between the reset and received seed message
@@ -42,6 +45,23 @@ SEED_START = (
 # number of `None` messages after `6B` request after which we'll ignore missing `A0` response
 # and try to go into the ISO-TP shell anyway (given that we got  `A0` response to the initial `59 45` request)
 NONE_MSG_CNT_THRESHOLD = 60
+
+
+# BSL response codes
+BSL_BLOCK_TYPE_ERROR   = 0xFF
+BSL_MODE_ERROR 		   = 0xFE
+BSL_CHKSUM_ERROR 	   = 0xFD
+BSL_ADDRESS_ERROR 	   = 0xFC
+BSL_ERASE_ERROR		   = 0xFB
+BSL_PROGRAM_ERROR	   = 0xFA
+BSL_VERIFICATION_ERROR = 0xF9
+BSL_PROTECTION_ERROR   = 0xF8
+BSL_TIMEOUT_ERROR	   = 0xF7
+BSL_SUCCESS 		   = 0x55
+
+# more constants such as page sizes for pflash and dflash
+PFLASH_PAGE_SIZE = 0xFF
+DFLASH_PAGE_SIZE = 0x80
 
 sector_map_tc1791 = {  # Sector lengths for PMEM routines
     0: 0x4000,
@@ -60,6 +80,27 @@ sector_map_tc1791 = {  # Sector lengths for PMEM routines
     13: 0x40000,
     14: 0x40000,
     15: 0x40000,
+}
+
+sector_map_tc1796 = {  # Sector lengths for PMEM routines
+    # PPS0 physical sector includes PS0 - PS3
+    0: 0x4000,  # 16 Kbyte size
+    1: 0x4000,
+    2: 0x4000,
+    3: 0x4000,
+    # PPS1 physical sector includes PS4 - PS7
+    4: 0x4000,
+    5: 0x4000,
+    6: 0x4000,
+    7: 0x4000,
+    # PS8 128 KByte
+    8: 0x20000,
+    # PS9 256 KByte
+    9: 0x40000,
+    # PS10, PS11 and PS12 are 512 Kbyte in size each
+    10: 0x80000,
+    11: 0x80000,
+    12: 0x80000
 }
 
 
@@ -743,7 +784,7 @@ def write_byte(addr, value):
 
 def calc_chksum(header_data):
     crc_byte = 0
-    for i in range(15):
+    for i in range(len(header_data)):
         crc_byte = crc_byte ^ header_data[i]
     crc_byte = crc_byte.to_bytes(2, 'big')[1]
     return crc_byte
@@ -821,6 +862,318 @@ def erase_sector(address):
     message = Message(is_extended_id=False, dlc=8, arbitration_id=0x300, data=data)
     bus.send(message)
     message = bus.recv()
+
+
+def erase_sector_simos8(address, size):
+    """
+    Erase flash sector defined by its address and size
+    :param address:
+    :param size:
+    :return:
+    """
+    data_msg1 = bytearray([0x00, 0x04])
+    # address needs to be 4 bytes
+    data_msg1 += address
+    # split the size into 2 parts
+    size_part1 = size[:2]
+    size_part2 = size[2:]
+    data_msg1 += size_part1
+    message1 = Message(is_extended_id=False, dlc=8, arbitration_id=0xC0, data=data_msg1)
+    bus.send(message1)
+
+    # form second message:
+    data_msg2 = bytearray(size_part2)
+    data_msg2 += bytearray([0x00, 0x00, 0x00, 0x00, 0x00])
+    chksum_byte = calc_chksum(data_msg1 + data_msg2)
+    data_msg2 += bytearray([chksum_byte])
+    message2 = Message(is_extended_id=False, dlc=8, arbitration_id=0xC0, data=data_msg2)
+    bus.send(message2)
+    # get ack message:
+    msg = bus.recv()
+    print(msg)
+    bsl_resp_code = msg.data[0]
+    if bsl_resp_code != BSL_SUCCESS:
+        print('Error erasing sector, error code {0:X}'.format(bsl_resp_code))
+    return bsl_resp_code
+
+
+def erase_asw_simos8():
+    """
+    Erase the ASW section of Simos 8 ECU
+    :return:
+    """
+    for addr, size in {0xA0080000: 0x80000, 0xA0100000: 0x80000, 0xA0180000: 0x80000}:
+        if BSL_SUCCESS != erase_sector_simos8(addr.to_bytes(4, "big"), size.to_bytes(4, "little")):
+            print('Error erasing ASW sector with addr {0:X} and size {0:X}!'.format(addr, size))
+            logging.info('Error erasing ASW sector with addr {0:X} and size {0:X}!'.format(addr, size))
+            return False
+    logging.info('Successfully erased ASW!')
+    print('Successfully erased ASW!')
+    return True
+
+
+def erase_cal_simos8():
+    """
+    Erase the CAL section of Simos 8 ECU
+    :return:
+    """
+    for addr, size in ({0xA0040000: 0x00040000}).items():
+        if BSL_SUCCESS != erase_sector_simos8(addr.to_bytes(4, "big"), size.to_bytes(4, "little")):
+            print('Error erasing CAL area!')
+            logging.info('Error erasing CAL area!')
+            return False
+    logging.info('Successfully erased CAL area!')
+    print('Successfully erased CAL area!')
+    return True
+
+
+def erase_cboot_simos8():
+    """
+    Erase the CBOOT section of Simos 8 ECU
+    :return:
+    """
+    for addr, size in ({0xA0020000: 0x20000}).items():
+        if BSL_SUCCESS != erase_sector_simos8(addr.to_bytes(4, "big"), size.to_bytes(4, "little")):
+            print('Error erasing CBOOT area!')
+            logging.info('Error erasing CBOOT!')
+            return False
+    logging.info('Successfully erased CBOOT!')
+    print('Successfully erased CBOOT!')
+    return True
+
+
+def send_flash_program_header(address):
+    """
+    Sends 2 BSL header CAN frames to prepare the controller to program the page at the address
+    :param address:
+    :return:
+    """
+    data = bytearray([0x00, 0x00])
+    address_bytes = address.to_bytes(4, "big")
+    data += address_bytes
+    message = Message(is_extended_id=False, dlc=8, arbitration_id=0xC0, data=data)
+    bus.send(message)
+    # send the second message which is empty:
+    data2 = bytearray([0x00] * 7)
+    # calc val of the last (checksum) byte
+    header_data = data + data2
+    # don't need to include byte 0, which is redundant anyway
+    chksum_byte = calc_chksum(header_data[1:])
+    data2 += bytearray([chksum_byte])
+    message2 = Message(is_extended_id=False, dlc=8, arbitration_id=0xC0, data=data2)
+    bus.send(message2)
+    message = bus.recv(1.0)
+    # should get an acknowledgement 0x55:
+    print(message)
+    bsl_response = message.data[0]
+    # should be 0x55 if okay
+    return bsl_response
+
+
+def send_EOT_frame():
+    """
+    Sends end-of-transmission CAN frame sequence
+    :return:
+    """
+    data = bytearray([0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+    message = Message(is_extended_id=False, dlc=8, arbitration_id=0xC0, data=data)
+    bus.send(message)
+    # send the second message which is empty:
+    data2 = bytearray([0x00] * 7)
+    # calc val of the last (checksum) byte
+    header_data = data + data2
+    # don't count byte 0
+    chksum_byte = calc_chksum(header_data[1:])
+    data2 += bytearray([chksum_byte])
+    message2 = Message(is_extended_id=False, dlc=8, arbitration_id=0xC0, data=data2)
+    bus.send(message2)
+    message = bus.recv(1.0)
+    # should get an acknowledgement 0x55:
+    print(message)
+    bsl_resp = message.data[0]
+    return bsl_resp
+
+
+def send_page_data(data):
+    """
+    Send 256 bytes of data from the bytearray via CAN frames to the controller
+    :param data:
+    :return:
+    """
+    # send the first CAN frame
+    can_frame_data = bytearray([0x01,  # data block
+                      0x01  # do verification afterwards
+                      ])
+    # first 6 bytes of data
+    rest_of_first_frame = bytearray(data[:6])
+    can_frame_data += rest_of_first_frame
+    # keep the checksum tally, don't checksum byte 0:
+    chksum = calc_chksum(can_frame_data[1:])
+    message = Message(is_extended_id=False, dlc=8, arbitration_id=0xC0, data=can_frame_data)
+    bus.send(message)
+    # logging.info(message.data)
+    # 31 Subsequent 8-bytes-frames
+    for j in range(31):
+        # slice the data array into 8 byte chunks
+        can_frame_data = bytearray(data[(6 + j * 8): (j * 8 + 14)])
+        chksum = chksum ^ calc_chksum(can_frame_data)
+        message = Message(is_extended_id=False, dlc=8, arbitration_id=0xC0, data=can_frame_data)
+        bus.send(message)
+        # logging.info(message.data)
+    # Last frame including the last 2 data bytes
+    can_frame_data = bytearray([data[254], data[255]])
+    can_frame_data += bytearray([0x00] * 5)
+    chksum = chksum ^ calc_chksum(can_frame_data)
+    can_frame_data += bytearray([chksum])
+    message = Message(is_extended_id=False, dlc=8, arbitration_id=0xC0, data=can_frame_data)
+    bus.send(message)
+    # logging.info(message.data)
+    # wait for recv ack msg:
+    message = bus.recv(0.5)
+    # should get an acknowledgement 0x55:
+    # print(message)
+    bsl_resp = message.data[0]
+    # wait for page verification ack msg:
+    message = bus.recv(0.5)
+    # print(message)
+    bsl_verification_resp = message.data[0]
+    if BSL_SUCCESS != bsl_resp or BSL_SUCCESS != bsl_resp:
+        return BSL_PROGRAM_ERROR
+    return bsl_resp  # should be 0x55
+
+
+def write_pflash_page(address, data):
+    """
+    Writes data from the buffer to the flash page(s) starting at specified address
+    :param address: address to write the data to
+    :param data: bytearray we need to write
+    :return:
+    """
+    # send program flash header seq first:
+    header_send_result = send_flash_program_header(address)
+    if header_send_result != BSL_SUCCESS:
+        logging.info('Error sending program flash header messages! error code: {0:X}'.format(header_send_result))
+        print('Error sending program flash header messages!')
+        return header_send_result
+    # perhaps we can send more than 1 page at a time:
+    # TODO wrap in TQDM to display the progress:
+    total_len = len(data)
+    t = tqdm(total=total_len, unit="B")
+    while len(data) >= PFLASH_PAGE_SIZE:
+        dt = data[:PFLASH_PAGE_SIZE]
+        data = data[PFLASH_PAGE_SIZE:]
+        data_send_result = send_page_data(dt)
+        if data_send_result != BSL_SUCCESS:
+            logging.info('Error sending pflash page data! Error code: {0:X}'.format(data_send_result))
+            print('Error sending pflash page data! Error code: {0:X}'.format(data_send_result))
+            return data_send_result
+        # decrement the total len we got to write:
+        total_len -= PFLASH_PAGE_SIZE
+        t.update(total_len)
+    # case when one last piece is less than PFLASH_PAGE_SIZE but not 0:
+    if len(data) > 0:
+        #  we got partial flash page, need to pad it with 0x00s
+        logging.info('Got partially filled page, padding it with 0x00 in the end')
+        print('Got partially filled page, padding it with 0x00 in the end')
+        d = list(zip_longest(data, range(PFLASH_PAGE_SIZE), fillvalue=0x00))
+        data_to_send = [x[0] for x in d]
+        # send it:
+        data_send_result = send_page_data(data_to_send)
+        if data_send_result != BSL_SUCCESS:
+            logging.info('Error sending last partial pflash page data! Error code: {0:X}'.format(data_send_result))
+            print('Error sending last partial pflash page data! Error code: {0:X}'.format(data_send_result))
+            return data_send_result
+        total_len -= len(data)
+        t.update(total_len)
+    eot_send_result = send_EOT_frame()
+    if eot_send_result != BSL_SUCCESS:
+        logging.info('Error sending EOT message! Error code: {0:X}'.format(eot_send_result))
+        print('Error sending EOT message! Error code: {0:X}'.format(eot_send_result))
+        return eot_send_result
+    # close the progress bar:
+    t.close()
+    logging.info('Programming success!')
+    print('Programming success!')
+    return BSL_SUCCESS
+
+
+def write_dflash_page(address, data):
+    """
+    Writes data bytes to the dflash page (size 128 Bytes) at specified address
+    :param address:
+    :param data:
+    :return:
+    """
+
+    pass
+
+
+def write_file_simos8(address, size, filename):
+    """
+    This writes file to Simos 8 at specified address
+    :param address:
+    :param size:
+    :param filename:
+    :return:
+    """
+    total_size_remaining = int.from_bytes(size, "big")
+    t = tqdm(total=total_size_remaining, unit="B")
+    address_int = int.from_bytes(address, "big")
+
+    # send program flash header seq first:
+    header_send_result = send_flash_program_header(address_int)
+    if header_send_result != BSL_SUCCESS:
+        logging.info('Error sending program flash header messages! error code: {0:X}'.format(header_send_result))
+        print('Error sending program flash header messages!')
+        return header_send_result
+
+    with open(filename, "rb") as input_file:
+        while total_size_remaining >= PFLASH_PAGE_SIZE:
+            # read `PFLASH_PAGE_SIZE` number of bytes from the file:
+            file_data = bytearray(input_file.read(PFLASH_PAGE_SIZE))
+            # print(len(file_data))
+            # check the length of the data we just read from the file:
+            chunk_len = len(file_data)
+            if chunk_len == 0:
+                total_size_remaining = 0
+                t.update(total_size_remaining)
+                break
+            data_send_result = send_page_data(file_data)
+            if data_send_result != BSL_SUCCESS:
+                logging.info('Error sending pflash page data! Error code: {0:X}'.format(data_send_result))
+                print('Error sending pflash page data! Error code: {0:X}'.format(data_send_result))
+                return data_send_result
+            # decrement the total_size_remaining:
+            total_size_remaining -= PFLASH_PAGE_SIZE
+            t.update(total_size_remaining)
+        # case when one last piece is shorter than `PFLASH_PAGE_SIZE` bytes but not empty:
+        if total_size_remaining > 0:
+            #  we got partial flash page, need to pad it with 0x00s
+            logging.info('Got partially filled page, padding it with 0x00 in the end')
+            # print('Got partially filled page, padding it with 0x00 in the end')
+            file_data = input_file.read(total_size_remaining)
+            d = list(zip_longest(file_data, range(PFLASH_PAGE_SIZE), fillvalue=0x00))
+            data_to_send = [x[0] for x in d]
+            # send it:
+            data_send_result = send_page_data(data_to_send)
+            if data_send_result != BSL_SUCCESS:
+                logging.info('Error sending last partial pflash page data! Error code: {0:X}'.format(data_send_result))
+                print('Error sending last partial pflash page data! Error code: {0:X}'.format(data_send_result))
+                return data_send_result
+            total_size_remaining -= len(file_data)
+            # total_size_remaining should be 0 after this
+            t.update(total_size_remaining)
+
+    eot_send_result = send_EOT_frame()
+    if eot_send_result != BSL_SUCCESS:
+        logging.info('Error sending EOT message! Error code: {0:X}'.format(eot_send_result))
+        print('Error sending EOT message! Error code: {0:X}'.format(eot_send_result))
+        return eot_send_result
+    # close the progress bar:
+    t.close()
+    logging.info('Programming success!')
+    print('Programming success!')
+    return BSL_SUCCESS
 
 
 def print_enabled_disabled(string, value):
@@ -1001,22 +1354,29 @@ def simos8_read_compressed(address, size, filename):
         message = bus.recv()
         # print(message)
         compressed_size = size_remaining = int.from_bytes(message.data[5:8], "big")
+        addr = int.from_bytes(message.data[1:5], "big")
         logging.info("Waiting for compressed data of size: " + hex(size_remaining))
+        logging.info("from the address: " + hex(addr))
         data = bytearray()
         sequence = 1
         while size_remaining > 0:
             message = bus.recv()
             # print(message)
             new_sequence = message.data[1]
+            # need to log the message seqs
+            logging.info("Seq from the message: {}".format(hex(new_sequence)))
             if sequence != new_sequence:
-                print("Sequencing error! " + hex(new_sequence) + hex(sequence))
+                print("Sequencing error! " + 'Seq num from the message {}'.format(hex(new_sequence)) +
+                      'Seq num from the counter {}'.format(hex(sequence)))
                 print(message)
-                logging.info("Sequencing error! " + hex(new_sequence) + hex(sequence))
+                logging.info("Sequencing error! " + 'Seq num from the message {}'.format(hex(new_sequence)) +
+                      'Seq num from the counter {}'.format(hex(sequence)))
                 logging.info(message)
                 t.close()
                 output_file.close()
                 return
             sequence += 1
+            logging.info("Seq from the counter: {} {}".format(hex(sequence), hex(sequence & 0xFF)))
             sequence = sequence & 0xFF
             data += message.data[2:8]
             size_remaining -= 6
@@ -1229,12 +1589,6 @@ class BootloaderRepl(cmd.Cmd):
         else:
             print("Failed to retrieve Device ID")
 
-    def do_readaddr(self, arg):
-        """readaddr <addr> : Read 32 bits from an arbitrary address"""
-        byte_specifier = bytearray.fromhex(arg)
-        byte = read_byte(byte_specifier)
-        print(byte.hex())
-
     def do_readaddr_simos8(self, arg):
         """readaddr <addr> : Read 32 bits from an arbitrary address"""
         byte_specifier = bytearray.fromhex(arg)
@@ -1257,7 +1611,7 @@ class BootloaderRepl(cmd.Cmd):
         byte = read_byte_simos8(0xD4000C04.to_bytes(4, "big"))
         print(byte.hex())
 
-    def do_simos8_can_test(self, arg):
+    def do_can_test_simos8(self, arg):
         """test CAN response from bootloader"""
         byte = simos8_can_frame_test()
         print(byte.hex())
@@ -1280,16 +1634,11 @@ class BootloaderRepl(cmd.Cmd):
         for pmu_num in PMU_BASE_ADDRS:
             read_flash_properties(pmu_num, PMU_BASE_ADDRS[pmu_num])
 
-    def do_dumpmaskrom(self, arg):
-        """Dump the Tricore Mask ROM to maskrom.bin"""
-        read_bytes_file(0xAFFFC000, 0x4000, "maskrom.bin")
+    def do_dumpmaskrom_simos8(self, arg):
+        """Dump the Tricore Mask ROM to maskrom_simos8.bin Version for Simos 8"""
+        simos8_read_bytes_file(0xAFFFC000, 0x4000, "maskrom_simos8.bin")
 
-    def do_dumpmem(self, arg):
-        """dumpmem <addr> <size> <filename>: Dump <addr> to <filename> with <size> bytes"""
-        args = arg.split()
-        read_bytes_file(int(args[0], 16), int(args[1], 16), args[2])
-
-    def do_simos8_dumpmem(self, arg):
+    def do_dumpmem_simos8(self, arg):
         """dumpmem <addr> <size> <filename>: Dump <addr> to <filename> with <size> bytes"""
         args = arg.split()
         simos8_read_bytes_file(int(args[0], 16), int(args[1], 16), args[2])
@@ -1314,14 +1663,7 @@ class BootloaderRepl(cmd.Cmd):
         password_address = bytearray.fromhex(args[0])
         sboot_crc_reset(password_address)
 
-    def do_send_read_passwords(self, arg):
-        """send_read_passwords <pw1> <pw2>: unlock Flash using passwords"""
-        args = arg.split()
-        pw1 = int.from_bytes(bytearray.fromhex(args[0]), "big").to_bytes(4, "little")
-        pw2 = int.from_bytes(bytearray.fromhex(args[1]), "big").to_bytes(4, "little")
-        send_passwords(pw1, pw2)
-
-    def do_send_simos8_read_passwords(self, arg):
+    def do_send_read_passwords_simos8(self, arg):
         """send_read_passwords <pw1> <pw2>: unlock Flash using read passwords
         i.e. `send_simos8_read_passwords 53b6495b 8e1ffeb1`
         """
@@ -1330,45 +1672,45 @@ class BootloaderRepl(cmd.Cmd):
         pw2 = int.from_bytes(bytearray.fromhex(args[1]), "big").to_bytes(4, "little")
         simos8_send_passwords(pw1, pw2)
 
-    def do_send_write_passwords(self, arg):
-        """send_write_passwords <pw1> <pw2>: unlock Flash using passwords"""
-        args = arg.split()
-        pw1 = int.from_bytes(bytearray.fromhex(args[0]), "big").to_bytes(4, "little")
-        pw2 = int.from_bytes(bytearray.fromhex(args[1]), "big").to_bytes(4, "little")
-        send_passwords(pw1, pw2, read_write=0x05, ucb=1)
+    def do_send_test_ecu_pswds(self, arg):
+        """send_read and write passwords for the test Simos 8.5 ECU specimen we got - <pw1> <pw2>: 53b6495b 8e1ffeb1
+        - <pw3> <pw4> 1E2B9CCE 46FB84A5
+        i.e. equivalent to `send_simos8_read_passwords 53b6495b 8e1ffeb1`
+        """
+        # send read passwords
+        pw1 = int.from_bytes(bytearray.fromhex('53b6495b'), "big").to_bytes(4, "little")
+        pw2 = int.from_bytes(bytearray.fromhex('8e1ffeb1'), "big").to_bytes(4, "little")
+        simos8_send_passwords(pw1, pw2)
+        # send write passwords second:
+        # write passwords are 1E2B9CCEh and 46FB84A5h (LE) or 0xCE9C2B1B and A584FB46 in big endian
+        simos8_send_passwords(bytearray([0x1E, 0x2B, 0x9C, 0xCE]), bytearray([0x46, 0xFB, 0x84, 0xA5]),
+                              read_write=0x01, ucb=1)
 
-    def do_send_simos8_write_passwords(self, arg):
+    def do_send_write_passwords_simos8(self, arg):
         """send_write_passwords <pw1> <pw2>: unlock Flash using passwords"""
         args = arg.split()
         pw1 = int.from_bytes(bytearray.fromhex(args[0]), "big").to_bytes(4, "little")
         pw2 = int.from_bytes(bytearray.fromhex(args[1]), "big").to_bytes(4, "little")
         simos8_send_passwords(pw1, pw2, read_write=0x01, ucb=1)
 
-    def do_erase_sector(self, arg):
-        """erase_sector <addr> : Erase sector beginning with address"""
-        byte_specifier = bytearray.fromhex(arg)
-        erase_sector(byte_specifier)
+    def do_erase_sector_simos8(self, arg):
+        """erase_sector <addr> : (Simos8) Erase sector beginning with address"""
+        args = arg.split()
+        byte_specifier = bytearray.fromhex(args[0])
+        length_specifier = bytearray.fromhex(args[1])
+        erase_sector_simos8(byte_specifier, length_specifier)
 
     def do_extract_boot_passwords(self, arg):
         """extract_boot_passwords : Extract Simos18 boot passwords using SBoot exploit chain. Requires 'crchack' in
         ../crchack and 'twister' in ../Simos18_SBOOT """
         extract_boot_passwords()
 
-
     def do_extract_boot_passwords_simos8(self, arg):
         """extract_boot_passwords : Extract Simos8 boot passwords using SBoot exploit chain. Requires 'crchack' in
         ./crchack and 'twister' in ./Simos8_SBOOT """
         extract_boot_passwords_simos8()
 
-    def do_compressed_read(self, arg):
-        """compressed_read <addr> <length> <filename>: read data using LZ4 compression (fast, hopefully)"""
-        args = arg.split()
-        byte_specifier = bytearray.fromhex(args[0])
-        length_specifier = bytearray.fromhex(args[1])
-        filename = args[2]
-        is_success = read_compressed(byte_specifier, length_specifier, filename)
-
-    def do_simos8_compressed_read(self, arg):
+    def do_compressed_read_simos8(self, arg):
         """Simos 8 compressed_read <addr> <length> <filename>: read data using LZ4 compression (fast, hopefully)"""
         args = arg.split()
         byte_specifier = bytearray.fromhex(args[0])
@@ -1376,15 +1718,80 @@ class BootloaderRepl(cmd.Cmd):
         filename = args[2]
         is_success = simos8_read_compressed(byte_specifier, length_specifier, filename)
 
-    def do_simos8_uncompressed_read(self, arg):
+    def do_uncompressed_read_simos8(self, arg):
         """Simos 8 uncompressed_read <addr> <length> <filename>: read data without any compression
         i.e. `simos8_uncompressed_read a0040000 0003FE00 uncompressed_cal_area_read.bin`
         """
         args = arg.split()
-        byte_specifier = bytearray.fromhex(args[0])
+        address = bytearray.fromhex(args[0])
         length_specifier = bytearray.fromhex(args[1])
         filename = args[2]
-        is_success = simos8_read_uncompressed(byte_specifier, length_specifier, filename)
+        is_success = simos8_read_uncompressed(address, length_specifier, filename)
+
+    def do_read_test_ecu_cal(self, arg):
+        """
+        Test function which dumps my test Simos 8.5 ECU's CAL area to file. Used to confirm successful CAL area erasures
+        and writes
+        :return:
+        """
+        # send read passwords first:
+        # read passwords are 0x5B49B653h and 0xB1FE1F8Eh (LE) or 0x53b6495b and 0x8e1ffeb1 in big endian
+        simos8_send_passwords(bytearray([0x5B, 0x49, 0xB6, 0x53]), bytearray([0xB1, 0xFE, 0x1F, 0x8E]))
+        timestamp = time.strftime("%m%d%H%M%S")
+        addr = bytearray.fromhex('a0040000')
+        sz = bytearray.fromhex('00 04 00 00')
+        simos8_read_uncompressed(address=addr, size=sz, filename='simos85_cal_test_read_{}.bin'.format(timestamp))
+
+    # def do_read_test_ecu_cal_512bytes(self, arg):
+    #     """
+    #     Test function which dumps my test Simos 8.5 ECU's CAL area to file. Used to confirm successful CAL area erasures
+    #     and writes
+    #     :return:
+    #     """
+    #     # send read passwords first:
+    #     # read passwords are 0x5B49B653h and 0xB1FE1F8Eh (LE) or 0x53b6495b and 0x8e1ffeb1 in big endian
+    #     simos8_send_passwords(bytearray([0x5B, 0x49, 0xB6, 0x53]), bytearray([0xB1, 0xFE, 0x1F, 0x8E]))
+    #     timestamp = time.strftime("%m%d%H%M%S")
+    #     addr = bytearray.fromhex('a0040000')
+    #     sz = bytearray.fromhex('00 00 02 00')
+    #     simos8_read_uncompressed(address=addr, size=sz, filename='simos85_cal_test_read_{}.bin'.format(timestamp))
+
+
+    def do_erase_asw_simos8(self, arg):
+        """Erase ASW flash sections in Simos 8 ECU"""
+        erase_asw_simos8()
+
+    def do_erase_cal_simos8(self, arg):
+        """Erase CAL flash sections in Simos 8 ECU"""
+        erase_cal_simos8()
+
+    def do_erase_cboot_simos8(self, arg):
+        """Erase CAL flash sections in Simos 8 ECU"""
+        erase_cboot_simos8()
+
+    def do_erase_test_ecu_cal(self, arg):
+        """Erase CAL flash section in my test Simos 8.5 ECU. Will not work with other Simos 8.5 ECUs"""
+        # use func which sends all the passwords:
+        self.do_send_test_ecu_pswds(None)
+        erase_cal_simos8()
+
+    def do_write_test_ecu_cal(self, arg):
+        """Write CAL flash section in my test Simos 8.5 ECU. Will not work with other Simos 8.5 ECUs
+        Assumes CAL section has already been cleared"""
+        # send read and write passwords:
+        self.do_send_test_ecu_pswds(None)
+        # cal area is at 0xa0040000 and has a len of 0x40000 (262144 Bytes)
+        write_file_simos8(bytearray([0xA0, 0x04, 0x00, 0x00]), size=bytearray([0x00, 0x04, 0x00, 0x00]), filename='test_simos85_ecu_cal_area_40000.bin')
+        # write_file_simos8(bytearray([0xA0, 0x04, 0x00, 0x00]), size=bytearray([0x00, 0x04, 0x00, 0x00]), filename='test_simos85_ecu_cal_area_40000_bad_chksum.bin')
+
+
+    # def do_write_test_ecu_cal_512bytes(self, arg):
+    #     """Write CAL flash section in my test Simos 8.5 ECU. Will not work with other Simos 8.5 ECUs
+    #     Assumes CAL section has already been cleared"""
+    #     # send read and write passwords:
+    #     self.do_send_test_ecu_pswds(None)
+    #     # cal area is at 0xa0040000 and has a len of 0x40000 (262144 Bytes)
+    #     write_file_simos8(bytearray([0xA0, 0x04, 0x00, 0x00]), size=bytearray([0x00, 0x00, 0x02, 0x00]), filename='test_simos85_ecu_cal_area_40000.bin')
 
     def do_reset(self, arg):
         """reset: reset ECU"""
@@ -1399,6 +1806,14 @@ class BootloaderRepl(cmd.Cmd):
         sboot_seed = sboot_shell_test()
         print("Testing PWM, got seed: ")
         print(sboot_seed.hex())
+
+    def do_write_file_simos8(self, arg):
+        "write_file <addr> <length> <filename>: write data"
+        args = arg.split()
+        address = bytearray.fromhex(args[0])
+        length = bytearray.fromhex(args[1])
+        filename = args[2]
+        is_success = write_file_simos8(address=address, size=length, filename=filename)
 
 
 def parse(arg):
