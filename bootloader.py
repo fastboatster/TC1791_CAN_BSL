@@ -15,6 +15,7 @@ from itertools import zip_longest
 from udsoncan.connections import IsoTPSocketConnection
 import socket
 import logging
+import binascii
 
 timestr = time.strftime("%Y%m%d-%H%M%S")
 logging.basicConfig(level=logging.INFO, filename="logfile_{}".format(timestr), filemode="a+",
@@ -60,7 +61,7 @@ BSL_TIMEOUT_ERROR	   = 0xF7
 BSL_SUCCESS 		   = 0x55
 
 # more constants such as page sizes for pflash and dflash
-PFLASH_PAGE_SIZE = 0xFF
+PFLASH_PAGE_SIZE = 0x100
 DFLASH_PAGE_SIZE = 0x80
 
 sector_map_tc1791 = {  # Sector lengths for PMEM routines
@@ -618,7 +619,7 @@ def upload_bsl(skip_prep=False):
     print("Sending BSL initialization message...")
     # send bootloader.bin to CAN BSL in Tricore
     #bootloader_data = open("chopped_tc1796_bl.bin", "rb").read()
-    bootloader_data = open("read32.bin", "rb").read()
+    bootloader_data = open("bootloader.bin", "rb").read()
     #bootloader_data = open("CANLoader.bin", "rb").read()
     print(bootloader_data[0:8])
     data = [
@@ -902,7 +903,12 @@ def erase_asw_simos8():
     Erase the ASW section of Simos 8 ECU
     :return:
     """
-    for addr, size in {0xA0080000: 0x80000, 0xA0100000: 0x80000, 0xA0180000: 0x80000}:
+    asw_sector_map = {
+        0xA0080000: 0x80000,
+        0xA0100000: 0x80000,
+        0xA0180000: 0x80000
+                      }
+    for addr, size in asw_sector_map.items():
         if BSL_SUCCESS != erase_sector_simos8(addr.to_bytes(4, "big"), size.to_bytes(4, "little")):
             print('Error erasing ASW sector with addr {0:X} and size {0:X}!'.format(addr, size))
             logging.info('Error erasing ASW sector with addr {0:X} and size {0:X}!'.format(addr, size))
@@ -964,7 +970,8 @@ def send_flash_program_header(address):
     bus.send(message2)
     message = bus.recv(1.0)
     # should get an acknowledgement 0x55:
-    print(message)
+    logging.info('Got CAN message with id {}: {}'.format(message.arbitration_id, binascii.hexlify(message.data)))
+    # print(message)
     bsl_response = message.data[0]
     # should be 0x55 if okay
     return bsl_response
@@ -989,7 +996,8 @@ def send_EOT_frame():
     bus.send(message2)
     message = bus.recv(1.0)
     # should get an acknowledgement 0x55:
-    print(message)
+    logging.info('Got CAN message with id {}: {}'.format(message.arbitration_id, binascii.hexlify(message.data)))
+    # print(message)
     bsl_resp = message.data[0]
     return bsl_resp
 
@@ -1011,7 +1019,7 @@ def send_page_data(data):
     chksum = calc_chksum(can_frame_data[1:])
     message = Message(is_extended_id=False, dlc=8, arbitration_id=0xC0, data=can_frame_data)
     bus.send(message)
-    # logging.info(message.data)
+    logging.info(message.data)
     # 31 Subsequent 8-bytes-frames
     for j in range(31):
         # slice the data array into 8 byte chunks
@@ -1019,7 +1027,7 @@ def send_page_data(data):
         chksum = chksum ^ calc_chksum(can_frame_data)
         message = Message(is_extended_id=False, dlc=8, arbitration_id=0xC0, data=can_frame_data)
         bus.send(message)
-        # logging.info(message.data)
+        logging.info(message.data)
     # Last frame including the last 2 data bytes
     can_frame_data = bytearray([data[254], data[255]])
     can_frame_data += bytearray([0x00] * 5)
@@ -1027,7 +1035,7 @@ def send_page_data(data):
     can_frame_data += bytearray([chksum])
     message = Message(is_extended_id=False, dlc=8, arbitration_id=0xC0, data=can_frame_data)
     bus.send(message)
-    # logging.info(message.data)
+    logging.info(message.data)
     # wait for recv ack msg:
     message = bus.recv(0.5)
     # should get an acknowledgement 0x55:
@@ -1108,12 +1116,24 @@ def write_dflash_page(address, data):
     pass
 
 
-def write_file_simos8(address, size, filename):
+def pad_flash_page(data_buffer):
+    """
+    Pad the data bytes till it becomes a full pflash page
+    :param data_buffer:
+    :return:
+    """
+    d = list(zip_longest(data_buffer, range(PFLASH_PAGE_SIZE), fillvalue=0x00))
+    padded_data = [x[0] for x in d]
+    return padded_data
+
+
+def write_file_simos8(address, size, filename, offset=0x0):
     """
     This writes file to Simos 8 at specified address
     :param address:
     :param size:
-    :param filename:
+    :param filename: path to the file to write
+    :param offset: offset to read the file at
     :return:
     """
     total_size_remaining = int.from_bytes(size, "big")
@@ -1128,7 +1148,10 @@ def write_file_simos8(address, size, filename):
         return header_send_result
 
     with open(filename, "rb") as input_file:
+        # move the input_file pointer to the offset:
+        input_file.seek(offset)
         while total_size_remaining >= PFLASH_PAGE_SIZE:
+            # what happens when we specify the size larger than the file itself?
             # read `PFLASH_PAGE_SIZE` number of bytes from the file:
             file_data = bytearray(input_file.read(PFLASH_PAGE_SIZE))
             # print(len(file_data))
@@ -1136,8 +1159,23 @@ def write_file_simos8(address, size, filename):
             chunk_len = len(file_data)
             if chunk_len == 0:
                 total_size_remaining = 0
-                t.update(total_size_remaining)
+                # t.update(total_size_remaining)
+                t.update(chunk_len)
                 break
+            if chunk_len < PFLASH_PAGE_SIZE:
+                padded_file_data = pad_flash_page(file_data)
+                data_send_result = send_page_data(padded_file_data)
+                if data_send_result != BSL_SUCCESS:
+                    logging.info('Error sending last partial pflash page data! Error code: {0:X}'
+                                 .format(data_send_result))
+                    print('Error sending last partial pflash page data! Error code: {0:X}'.format(data_send_result))
+                    return data_send_result
+                total_size_remaining = 0
+                t.update(chunk_len)
+                break
+
+            # need to handle the case when we read more than 0 but less than PFLASH_PAGE_SIZE. this can happen when
+            # the file is shorter than the specified write size. Pad the data chunk with 0s to make a complete page
             data_send_result = send_page_data(file_data)
             if data_send_result != BSL_SUCCESS:
                 logging.info('Error sending pflash page data! Error code: {0:X}'.format(data_send_result))
@@ -1145,15 +1183,18 @@ def write_file_simos8(address, size, filename):
                 return data_send_result
             # decrement the total_size_remaining:
             total_size_remaining -= PFLASH_PAGE_SIZE
-            t.update(total_size_remaining)
-        # case when one last piece is shorter than `PFLASH_PAGE_SIZE` bytes but not empty:
+            t.update(PFLASH_PAGE_SIZE)
+        # case when theres's still one last piece left which is shorter than `PFLASH_PAGE_SIZE` bytes but not empty:
         if total_size_remaining > 0:
             #  we got partial flash page, need to pad it with 0x00s
             logging.info('Got partially filled page, padding it with 0x00 in the end')
             # print('Got partially filled page, padding it with 0x00 in the end')
             file_data = input_file.read(total_size_remaining)
-            d = list(zip_longest(file_data, range(PFLASH_PAGE_SIZE), fillvalue=0x00))
-            data_to_send = [x[0] for x in d]
+
+            # d = list(zip_longest(file_data, range(PFLASH_PAGE_SIZE), fillvalue=0x00))
+            # data_to_send = [x[0] for x in d]
+
+            data_to_send = pad_flash_page(file_data)
             # send it:
             data_send_result = send_page_data(data_to_send)
             if data_send_result != BSL_SUCCESS:
@@ -1162,7 +1203,7 @@ def write_file_simos8(address, size, filename):
                 return data_send_result
             total_size_remaining -= len(file_data)
             # total_size_remaining should be 0 after this
-            t.update(total_size_remaining)
+            t.update(len(file_data))
 
     eot_send_result = send_EOT_frame()
     if eot_send_result != BSL_SUCCESS:
@@ -1677,7 +1718,7 @@ class BootloaderRepl(cmd.Cmd):
         - <pw3> <pw4> 1E2B9CCE 46FB84A5
         i.e. equivalent to `send_simos8_read_passwords 53b6495b 8e1ffeb1`
         """
-        # send read passwords
+        # send read passwords first:
         pw1 = int.from_bytes(bytearray.fromhex('53b6495b'), "big").to_bytes(4, "little")
         pw2 = int.from_bytes(bytearray.fromhex('8e1ffeb1'), "big").to_bytes(4, "little")
         simos8_send_passwords(pw1, pw2)
@@ -1808,12 +1849,22 @@ class BootloaderRepl(cmd.Cmd):
         print(sboot_seed.hex())
 
     def do_write_file_simos8(self, arg):
-        "write_file <addr> <length> <filename>: write data"
+        """write_file_simos8 <addr> <length> <filename> <offset>: get data from the file at the offset and write
+        to the ECU at the address"""
         args = arg.split()
         address = bytearray.fromhex(args[0])
         length = bytearray.fromhex(args[1])
         filename = args[2]
-        is_success = write_file_simos8(address=address, size=length, filename=filename)
+        if len(args) == 4:
+            offset = bytearray.fromhex(args[3])
+            offset = int.from_bytes(offset, "big")
+            # offset = int.from_bytes(args[3], "big")
+        else:
+            offset = 0x0
+        # print(args)
+        print("Writing {} bytes from the file {} at the offset {} to the addr {}"
+              .format(binascii.hexlify(length), filename, offset, binascii.hexlify(address)))
+        is_success = write_file_simos8(address=address, size=length, filename=filename, offset=offset)
 
 
 def parse(arg):
