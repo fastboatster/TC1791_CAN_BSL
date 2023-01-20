@@ -39,9 +39,14 @@ In tandem with `twister` tool available at https://github.com/fastboatster/Simos
 # Hardware Setup
 
 Make connections according to the diagrams below:
-
+## Simos 8.5
 ![PCB](simos85_pcb_connection_diagram.jpg)
 ![RPi](rpi_connections.jpg)
+## Simos 8.4
+Due to some requests, posting this untested (for now) PCB layout for Simos 8.4, as it can be seen it can be connected similar to Simos 8.5.
+I.e., STB-N needs to be connected to 3V3 via 1kOhm resistor just like NSTB in Simos 8.5, and P10.1 and P10.0 need to
+be grounded and connected to 3v3 via 1kOhm, respectively, to get TC1796 into CAN Bootloader mode.
+![PCB84](simos84_pcb_pins.jpg)
 
 
 # Harness Pins
@@ -80,6 +85,8 @@ Nearly identical to 8.4 except for PWM pins:
 
 * `Simos8_SBOOT` should get cloned along with this repo as its one of its git submodules. Just compile `twister.c`, might require installing some `.deb` packages
 * `crchack` is also a git submodule so just compile it per instructions.
+* P.S. `twister.c` will need to be modified to include Simos 8.4 RSA key and to also take ECU type (8.4 vs 8.5) as an argument
+This is on TODO list for this project
 
 # "Bench reading" a Simos8 ECU:
 
